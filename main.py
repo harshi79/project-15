@@ -68,7 +68,7 @@ def load_proxies():
 PROXY_LIST = load_proxies()
 logger.info(f"Loaded {len(PROXY_LIST)} proxies.")
 
-# ============ CLOUDFLARE BYPASS (moved up for clarity) ============
+# ============ CLOUDFLARE BYPASS (moved up – already in your file) ============
 async def bypass_cloudflare(page, max_wait=120):
     start = asyncio.get_event_loop().time()
     while (asyncio.get_event_loop().time() - start) < max_wait:
@@ -440,7 +440,7 @@ async def add_to_queue(bot, user_id, chat_id, email, password, msg_id=None):
         worker_running = True
         asyncio.create_task(worker())
 
-# ============ OPTIMIZED LOGIN FUNCTION ============
+# ============ OPTIMIZED LOGIN FUNCTION (FIXED NAV ERROR) ============
 async def login_crunchyroll(email: str, password: str) -> dict:
     result = {"success": False, "screenshot": None, "message": ""}
     proxy_str = random.choice(PROXY_LIST) if PROXY_LIST else None
@@ -462,7 +462,7 @@ async def login_crunchyroll(email: str, password: str) -> dict:
 
         try:
             sso_url = "https://sso.crunchyroll.com/login?return_url=%2Fauthorize%3Fclient_id%3Dkmj7imhjt_q90lcbzzsj%26redirect_uri%3Dhttps%253A%252F%252Fwww.crunchyroll.com%252Fcallback%26response_type%3Dcookie%26state%3D"
-            # Reduced timeout and faster load state
+            # Reduced timeouts for speed
             await page.goto(sso_url, timeout=30000)
             await page.wait_for_load_state("domcontentloaded", timeout=15000)
 
@@ -482,7 +482,7 @@ async def login_crunchyroll(email: str, password: str) -> dict:
                 except:
                     pass
 
-            # Email – reduced timeouts and sleeps
+            # Email – reduced timeouts
             email_field = await page.wait_for_selector("input[name='email'], input[type='email']", timeout=5000)
             await email_field.fill(email)
             await asyncio.sleep(0.3)
@@ -496,18 +496,28 @@ async def login_crunchyroll(email: str, password: str) -> dict:
             submit_btn = await page.wait_for_selector("button[type='submit'], button:has-text('LOGIN')", timeout=5000)
             await submit_btn.click()
 
-            # Reduced wait after submit
-            await asyncio.sleep(3)
+            # Wait for page to start redirecting – then wait for network idle
+            await asyncio.sleep(3)  # brief initial wait
+            # Wait for the page to finish loading (network idle) – this prevents navigation errors
+            try:
+                await page.wait_for_load_state("networkidle", timeout=30000)
+            except:
+                # If it takes too long, proceed anyway
+                pass
 
-            # Wait for verification to clear (up to 30s, but usually faster)
-            for _ in range(15):
-                content = await page.content()
-                if "verifying" not in content.lower():
-                    break
-                await asyncio.sleep(2)
-
+            # Now it's safe to read content
             content = await page.content()
             url = page.url
+
+            # If still on verification page, give it more time (but we already waited)
+            if "verifying" in content.lower():
+                for _ in range(10):
+                    await asyncio.sleep(2)
+                    content = await page.content()
+                    if "verifying" not in content.lower():
+                        break
+
+            # Final check
             if "incorrect" in content.lower() or "wrong" in content.lower():
                 result["message"] = "❌ Wrong email or password"
             elif "www.crunchyroll.com/" in url and "login" not in url and "verifying" not in content.lower():
@@ -542,10 +552,10 @@ async def worker():
             password = task["password"]
             msg_id = task.get("msg_id")
 
-            # ---- Start login immediately in the background ----
+            # ---- Start login immediately ----
             login_task = asyncio.create_task(login_crunchyroll(email, password))
 
-            # ---- Progress bar steps with shorter delays ----
+            # ---- Fast progress bar steps (short delays) ----
             steps = [
                 ("Grab a cup of tea... this will take a moment!\n0%", 1.5),
                 ("▰▱▱▱▱▱▱▱▱▱ 10%\n(⁠◕‿◕⁠)", 1.5),
@@ -574,7 +584,7 @@ async def worker():
                 msg = await bot.send_message(chat_id=chat_id, text=steps[0][0])
                 msg_id = msg.message_id
 
-            # Loop through progress steps while login runs
+            # Loop through steps while login runs
             for text, delay in steps[1:]:
                 if login_task.done():
                     break
@@ -588,7 +598,7 @@ async def worker():
                 except Exception:
                     pass
 
-            # If login is still running, show 100% and wait
+            # If login still running, show 100% and wait
             if not login_task.done():
                 try:
                     await bot.edit_message_text(
@@ -600,7 +610,6 @@ async def worker():
                     pass
                 await login_task
 
-            # Get result
             result = login_task.result()
             new_count = await increment_usage(user_id)
 
@@ -610,7 +619,7 @@ async def worker():
             except Exception:
                 pass
 
-            # ---- Send ASCII boxed result ----
+            # ---- ASCII boxed result ----
             if result["success"]:
                 box = (
                     "╭──── success ────╮\n"
