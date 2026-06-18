@@ -556,24 +556,24 @@ async def worker():
             task_queue.task_done()
 
 # ---------- MAIN ----------
-async def initialize_db():
-    """Initialize MongoDB indexes (async)."""
-    await init_db()
-    logger.info("MongoDB initialized.")
-
 def main():
-    """Start the bot synchronously."""
+    """Start the bot with a persistent event loop."""
     if not BOT_TOKEN:
         print("❌ BOT_TOKEN not set. Exiting.")
         return
 
-    # Initialize MongoDB (run the async init inside a new loop)
-    asyncio.run(initialize_db())
+    # Create and set a new event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    # Run the async DB initialization inside this loop
+    loop.run_until_complete(init_db())
+    logger.info("MongoDB initialized.")
 
     # Build the application
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Add handlers (your existing ones)
+    # Add all handlers (your existing ones)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("chk", cmd_chk))
     app.add_handler(CommandHandler("usage", cmd_usage))
@@ -584,6 +584,11 @@ def main():
     app.add_handler(CallbackQueryHandler(main_menu_button, pattern="^(check|profile|help|support|back_main)$"))
 
     print("🤖 Bot started. Waiting for commands...")
+    # Run polling – this will use the loop we set
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
     # Run polling – this is synchronous and blocks
     app.run_polling()
 
