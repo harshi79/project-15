@@ -462,10 +462,11 @@ async def login_crunchyroll(email: str, password: str) -> dict:
 
         try:
             sso_url = "https://sso.crunchyroll.com/login?return_url=%2Fauthorize%3Fclient_id%3Dkmj7imhjt_q90lcbzzsj%26redirect_uri%3Dhttps%253A%252F%252Fwww.crunchyroll.com%252Fcallback%26response_type%3Dcookie%26state%3D"
-            await page.goto(sso_url, timeout=15000)
-            await page.wait_for_selector("input[name='email'], input[type='email']", timeout=8000)
+            await page.goto(sso_url, timeout=30000)
+            # Wait for the page to load enough – but don't wait too long
+            await page.wait_for_selector("input[name='email'], input[type='email']", timeout=10000)
 
-            # Cloudflare bypass
+            # Cloudflare bypass (will check and wait if needed)
             if not await bypass_cloudflare(page):
                 result["message"] = "⏱️ Cloudflare timed out."
                 result["screenshot"] = await page.screenshot()
@@ -474,39 +475,38 @@ async def login_crunchyroll(email: str, password: str) -> dict:
             # Cookie consent
             for sel in ["#onetrust-accept-btn-handler", "button:has-text('Accept All')"]:
                 try:
-                    btn = await page.wait_for_selector(sel, timeout=2000)
+                    btn = await page.wait_for_selector(sel, timeout=3000)
                     if btn:
                         await btn.click()
                         break
                 except:
                     pass
 
-            # Email
-            email_field = await page.wait_for_selector("input[name='email'], input[type='email']", timeout=4000)
+            # Email – with longer timeout
+            email_field = await page.wait_for_selector("input[name='email'], input[type='email']", timeout=10000)
             await email_field.fill(email)
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.2)
 
             # Password
-            password_field = await page.wait_for_selector("input[type='password']", timeout=4000)
+            password_field = await page.wait_for_selector("input[type='password']", timeout=10000)
             await password_field.fill(password)
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.2)
 
             # Submit
-            submit_btn = await page.wait_for_selector("button[type='submit'], button:has-text('LOGIN')", timeout=4000)
+            submit_btn = await page.wait_for_selector("button[type='submit'], button:has-text('LOGIN')", timeout=10000)
             await submit_btn.click()
 
-            # ---- Super-fast polling ----
-            await asyncio.sleep(0.5)  # initial short wait
+            # ---- Fast polling after submit ----
+            await asyncio.sleep(0.5)
 
             start_time = asyncio.get_event_loop().time()
-            timeout = 20  # max 20 seconds total
+            timeout_sec = 25  # max total after submit
 
-            while (asyncio.get_event_loop().time() - start_time) < timeout:
-                # Check URL and content
+            while (asyncio.get_event_loop().time() - start_time) < timeout_sec:
                 url = page.url
                 content = await page.content()
 
-                # Success: dashboard or home page
+                # Success: dashboard or home
                 if "www.crunchyroll.com/" in url and "login" not in url and "verifying" not in content.lower():
                     result["success"] = True
                     result["message"] = "✅ Login Successful!"
@@ -517,21 +517,21 @@ async def login_crunchyroll(email: str, password: str) -> dict:
                     result["message"] = "❌ Wrong email or password"
                     break
 
-                # Still on verification – wait and continue
+                # Still on verification – wait briefly
                 if "verifying" in content.lower():
                     await asyncio.sleep(0.5)
                     continue
 
-                # If we're on a login page again (after some redirect), it's a failure
+                # If we're on login page with a different error, break
                 if "login" in url and "callback" not in url:
                     result["message"] = "❌ Login failed – still on login page."
                     break
 
-                # Otherwise, keep waiting
+                # Otherwise keep polling
                 await asyncio.sleep(0.5)
 
-            # If we exited loop without success, check again quickly
-            if not result["success"] and not result["message"]:
+            # If we exited without a message, set a default
+            if not result["message"]:
                 content = await page.content()
                 url = page.url
                 if "www.crunchyroll.com/" in url and "login" not in url and "verifying" not in content.lower():
