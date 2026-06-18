@@ -530,7 +530,6 @@ async def bypass_cloudflare(page, max_wait=120):
     return False
 
 # ============ WORKER ============
-# ============ WORKER ============
 async def worker():
     global worker_running
     while True:
@@ -543,37 +542,50 @@ async def worker():
             password = task["password"]
             msg_id = task.get("msg_id")
 
-            # ---- Cool status animation ----
-            status_messages = [
-                ("🔍 Getting email...\n(⁠◕‿◕⁠)", 0.8),
-                ("📧 Fetching password...\n>⁠.⁠<", 0.8),
-                ("🔄 Checking credentials...\n༼⁠ ⁠つ⁠ ⁠◕‿◕⁠ ⁠༽⁠つ", 0.8),
-                ("⏳ Verifying...\n(⁠＾3＾⁠♪", 0.8),
-                ("🔐 Logging in...\nO⁠_⁠o", 0.8),
+            # ---- Progress bar steps (0% to 100%) - no emojis ----
+            steps = [
+                ("Grab a cup of tea... this will take a moment!\n0%", 4.0),
+                ("▰▱▱▱▱▱▱▱▱▱ 10%\n(⁠◕‿◕⁠)", 5.0),
+                ("▰▰▱▱▱▱▱▱▱▱ 20%\n>⁠.⁠<", 5.0),
+                ("▰▰▰▱▱▱▱▱▱▱ 30%\n༼⁠ ⁠つ⁠ ⁠◕‿◕⁠ ⁠༽⁠つ", 5.0),
+                ("▰▰▰▰▱▱▱▱▱▱ 40%\n(⁠＾3＾⁠♪", 5.0),
+                ("▰▰▰▰▰▱▱▱▱▱ 50%\nO⁠_⁠o", 5.0),
+                ("▰▰▰▰▰▰▱▱▱▱ 60%\n(⁠◕‿◕⁠)", 5.0),
+                ("▰▰▰▰▰▰▰▱▱▱ 70%\n>⁠.⁠<", 5.0),
+                ("▰▰▰▰▰▰▰▰▱▱ 80%\n༼⁠ ⁠つ⁠ ⁠◕‿◕⁠ ⁠༽⁠つ", 5.0),
+                ("▰▰▰▰▰▰▰▰▰▱ 90%\n(⁠＾3＾⁠♪", 5.0),
+                ("▰▰▰▰▰▰▰▰▰▰ 100%\nAlmost done!", 5.0),
             ]
 
-            # Send or edit the first status
+            # Send initial status or edit existing message
             if msg_id:
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=msg_id,
-                    text=status_messages[0][0]
-                )
+                try:
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=msg_id,
+                        text=steps[0][0]
+                    )
+                except Exception:
+                    msg = await bot.send_message(chat_id=chat_id, text=steps[0][0])
+                    msg_id = msg.message_id
             else:
-                msg = await bot.send_message(chat_id=chat_id, text=status_messages[0][0])
+                msg = await bot.send_message(chat_id=chat_id, text=steps[0][0])
                 msg_id = msg.message_id
 
-            # Loop through remaining statuses with delays
-            for text, delay in status_messages[1:]:
+            # Loop through remaining steps
+            for text, delay in steps[1:]:
                 await asyncio.sleep(delay)
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=msg_id,
-                    text=text
-                )
+                try:
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=msg_id,
+                        text=text
+                    )
+                except Exception:
+                    pass
 
-            # Small wait before actual login
-            await asyncio.sleep(0.5)
+            # Small wait before login
+            await asyncio.sleep(2)
 
             # ---- Perform login ----
             result = await login_crunchyroll(email, password)
@@ -583,27 +595,39 @@ async def worker():
             try:
                 await bot.delete_message(chat_id=chat_id, message_id=msg_id)
             except Exception:
-                pass  # ignore if already deleted
+                pass
 
-            # ---- Send final result with faces ----
+            # ---- Build the ASCII boxed result ----
             if result["success"]:
+                box = (
+                    "╭──── success ────╮\n"
+                    "  user authenticated ✌️\n"
+                    "  successfully 🌀\n"
+                    "╰─────────────╯"
+                )
+                caption = f"{box}\n\n`{email}` (Used {new_count}/{DAILY_LIMIT} today)"
                 await bot.send_photo(
                     chat_id=chat_id,
                     photo=SUCCESS_IMAGE,
-                    caption=f"✅ Successfully logged in! ^⁠_⁠^\n`{email}` (Used {new_count}/{DAILY_LIMIT} today)"
+                    caption=caption
                 )
             else:
+                box = (
+                    "╭──────── failed ────────╮\n"
+                    "   ✗ authentication failed ⚠️\n"
+                    "   access denied 🚫\n"
+                    "╰────────────────────╯"
+                )
                 if result["screenshot"]:
+                    caption = f"{box}\n\n`{email}` – {result['message']} (Used {new_count}/{DAILY_LIMIT} today)"
                     await bot.send_photo(
                         chat_id=chat_id,
                         photo=result["screenshot"],
-                        caption=f"❌ Failed to login! ಥ⁠_⁠ಥ\n`{email}` – {result['message']} (Used {new_count}/{DAILY_LIMIT} today)"
+                        caption=caption
                     )
                 else:
-                    await bot.send_message(
-                        chat_id=chat_id,
-                        text=f"❌ Failed to login! ಥ⁠_⁠ಥ\n`{email}` – {result['message']} (Used {new_count}/{DAILY_LIMIT} today)"
-                    )
+                    text = f"{box}\n\n`{email}` – {result['message']} (Used {new_count}/{DAILY_LIMIT} today)"
+                    await bot.send_message(chat_id=chat_id, text=text)
 
             await asyncio.sleep(GLOBAL_DELAY)
 
