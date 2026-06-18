@@ -502,6 +502,7 @@ async def login_crunchyroll(email: str, password: str) -> dict:
     return result
 
 # ============ WORKER ============
+# ============ WORKER ============
 async def worker():
     global worker_running
     while True:
@@ -514,38 +515,43 @@ async def worker():
             password = task["password"]
             msg_id = task.get("msg_id")
 
-            # ---- Progress bar steps (0% to 100%) - no emojis ----
-            steps = [
-                ("Grab a cup of tea... this will take a moment!\n0%", 4.0),
-                ("▰▱▱▱▱▱▱▱▱▱ 10%\n(⁠◕‿◕⁠)", 5.0),
-                ("▰▰▱▱▱▱▱▱▱▱ 20%\n>⁠.⁠<", 5.0),
-                ("▰▰▰▱▱▱▱▱▱▱ 30%\n༼⁠ ⁠つ⁠ ⁠◕‿◕⁠ ⁠༽⁠つ", 5.0),
-                ("▰▰▰▰▱▱▱▱▱▱ 40%\n(⁠＾3＾⁠♪", 5.0),
-                ("▰▰▰▰▰▱▱▱▱▱ 50%\nO⁠_⁠o", 5.0),
-                ("▰▰▰▰▰▰▱▱▱▱ 60%\n(⁠◕‿◕⁠)", 5.0),
-                ("▰▰▰▰▰▰▰▱▱▱ 70%\n>⁠.⁠<", 5.0),
-                ("▰▰▰▰▰▰▰▰▱▱ 80%\n༼⁠ ⁠つ⁠ ⁠◕‿◕⁠ ⁠༽⁠つ", 5.0),
-                ("▰▰▰▰▰▰▰▰▰▱ 90%\n(⁠＾3＾⁠♪", 5.0),
-                ("▰▰▰▰▰▰▰▰▰▰ 100%\nAlmost done!", 5.0),
-            ]
+            # ---- Start the login in the background ----
+            login_task = asyncio.create_task(login_crunchyroll(email, password))
 
-            # Send initial status or edit existing message
+            # ---- Show initial status ----
+            status_msg = "Grab a cup of tea... this will take a moment!\n0%"
             if msg_id:
                 try:
                     await bot.edit_message_text(
                         chat_id=chat_id,
                         message_id=msg_id,
-                        text=steps[0][0]
+                        text=status_msg
                     )
                 except Exception:
-                    msg = await bot.send_message(chat_id=chat_id, text=steps[0][0])
+                    msg = await bot.send_message(chat_id=chat_id, text=status_msg)
                     msg_id = msg.message_id
             else:
-                msg = await bot.send_message(chat_id=chat_id, text=steps[0][0])
+                msg = await bot.send_message(chat_id=chat_id, text=status_msg)
                 msg_id = msg.message_id
 
-            # Loop through remaining steps
-            for text, delay in steps[1:]:
+            # ---- Progress bar steps (10% to 90%) ----
+            progress_steps = [
+                ("▰▱▱▱▱▱▱▱▱▱ 10%\n(⁠◕‿◕⁠)", 1.5),
+                ("▰▰▱▱▱▱▱▱▱▱ 20%\n>⁠.⁠<", 1.5),
+                ("▰▰▰▱▱▱▱▱▱▱ 30%\n༼⁠ ⁠つ⁠ ⁠◕‿◕⁠ ⁠༽⁠つ", 1.5),
+                ("▰▰▰▰▱▱▱▱▱▱ 40%\n(⁠＾3＾⁠♪", 1.5),
+                ("▰▰▰▰▰▱▱▱▱▱ 50%\nO⁠_⁠o", 1.5),
+                ("▰▰▰▰▰▰▱▱▱▱ 60%\n(⁠◕‿◕⁠)", 1.5),
+                ("▰▰▰▰▰▰▰▱▱▱ 70%\n>⁠.⁠<", 1.5),
+                ("▰▰▰▰▰▰▰▰▱▱ 80%\n༼⁠ ⁠つ⁠ ⁠◕‿◕⁠ ⁠༽⁠つ", 1.5),
+                ("▰▰▰▰▰▰▰▰▰▱ 90%\n(⁠＾3＾⁠♪", 1.5),
+            ]
+
+            # ---- Loop through progress steps while login runs ----
+            for text, delay in progress_steps:
+                # Check if login is already done
+                if login_task.done():
+                    break
                 await asyncio.sleep(delay)
                 try:
                     await bot.edit_message_text(
@@ -556,11 +562,21 @@ async def worker():
                 except Exception:
                     pass
 
-            # Small wait before login
-            await asyncio.sleep(2)
+            # ---- Wait for login to complete (if not already) ----
+            if not login_task.done():
+                # Show "Almost done..." while waiting
+                try:
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=msg_id,
+                        text="▰▰▰▰▰▰▰▰▰▰ 100%\nAlmost done!"
+                    )
+                except Exception:
+                    pass
+                await login_task  # wait for it to finish
 
-            # ---- Perform login ----
-            result = await login_crunchyroll(email, password)
+            # ---- Get the result ----
+            result = login_task.result()
             new_count = await increment_usage(user_id)
 
             # ---- Delete the status message ----
@@ -569,7 +585,7 @@ async def worker():
             except Exception:
                 pass
 
-            # ---- Build the ASCII boxed result ----
+            # ---- Send final result ----
             if result["success"]:
                 box = (
                     "╭──── success ────╮\n"
