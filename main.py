@@ -435,10 +435,10 @@ async def login_crunchyroll(email: str, password: str) -> dict:
 
         try:
             sso_url = "https://sso.crunchyroll.com/login?return_url=%2Fauthorize%3Fclient_id%3Dkmj7imhjt_q90lcbzzsj%26redirect_uri%3Dhttps%253A%252F%252Fwww.crunchyroll.com%252Fcallback%26response_type%3Dcookie%26state%3D"
-            await page.goto(sso_url, timeout=60000)
-            await page.wait_for_load_state("networkidle", timeout=30000)
+            await page.goto(sso_url, timeout=30000)  # reduced from 60000
+            await page.wait_for_load_state("domcontentloaded", timeout=15000)  # faster than networkidle
 
-            # Cloudflare bypass
+            # Cloudflare bypass (unchanged)
             if not await bypass_cloudflare(page):
                 result["message"] = "⏱️ Cloudflare timed out."
                 result["screenshot"] = await page.screenshot()
@@ -454,21 +454,24 @@ async def login_crunchyroll(email: str, password: str) -> dict:
                 except:
                     pass
 
-            # Email
-            email_field = await page.wait_for_selector("input[name='email'], input[type='email']", timeout=10000)
+            # Email (timeout reduced)
+            email_field = await page.wait_for_selector("input[name='email'], input[type='email']", timeout=5000)
             await email_field.fill(email)
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)  # reduced from 1
 
             # Password
-            password_field = await page.wait_for_selector("input[type='password']", timeout=10000)
+            password_field = await page.wait_for_selector("input[type='password']", timeout=5000)
             await password_field.fill(password)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
 
             # Submit
             submit_btn = await page.wait_for_selector("button[type='submit'], button:has-text('LOGIN')", timeout=5000)
             await submit_btn.click()
 
-            await asyncio.sleep(5)
+            # Wait for response – reduced sleep
+            await asyncio.sleep(3)  # was 5
+
+            # Check for verification – loop still runs but breaks early if cleared
             for _ in range(15):
                 content = await page.content()
                 if "verifying" not in content.lower():
@@ -497,37 +500,6 @@ async def login_crunchyroll(email: str, password: str) -> dict:
         finally:
             await browser.close()
     return result
-
-async def bypass_cloudflare(page, max_wait=120):
-    start = asyncio.get_event_loop().time()
-    while (asyncio.get_event_loop().time() - start) < max_wait:
-        try:
-            content = await page.content()
-            url = page.url
-            if "cloudflare" in content.lower() or "security verification" in content.lower():
-                logger.info("🔍 Cloudflare detected – trying to auto‑click Verify...")
-                try:
-                    verify_btn = await page.wait_for_selector(
-                        "button:has-text('Verify'), button:has-text('I am human'), button:has-text('Verify you are human')",
-                        timeout=3000
-                    )
-                    if verify_btn:
-                        await verify_btn.click()
-                        await asyncio.sleep(3)
-                except:
-                    await asyncio.sleep(2)
-                await asyncio.sleep(2)
-                new_content = await page.content()
-                new_url = page.url
-                if ("cloudflare" not in new_content.lower() and 
-                    "security verification" not in new_content.lower()) or \
-                   ("www.crunchyroll.com/" in new_url and "login" not in new_url):
-                    return True
-            else:
-                return True
-        except:
-            await asyncio.sleep(1)
-    return False
 
 # ============ WORKER ============
 async def worker():
