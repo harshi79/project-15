@@ -555,31 +555,37 @@ async def worker():
         finally:
             task_queue.task_done()
 
-# ============ MAIN ============
-async def main():
+# ---------- MAIN ----------
+async def initialize_db():
+    """Initialize MongoDB indexes (async)."""
+    await init_db()
+    logger.info("MongoDB initialized.")
+
+def main():
+    """Start the bot synchronously."""
     if not BOT_TOKEN:
         print("❌ BOT_TOKEN not set. Exiting.")
         return
 
-    # Initialize MongoDB indexes
-    await init_db()
-    logger.info("MongoDB initialized.")
+    # Initialize MongoDB (run the async init inside a new loop)
+    asyncio.run(initialize_db())
 
+    # Build the application
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Add handlers (your existing ones)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("chk", cmd_chk))
     app.add_handler(CommandHandler("usage", cmd_usage))
     app.add_handler(CommandHandler("support", cmd_support))
     app.add_handler(CommandHandler("bcast", cmd_broadcast))
-
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-
     app.add_handler(CallbackQueryHandler(verify_sub, pattern="^verify_sub$"))
     app.add_handler(CallbackQueryHandler(main_menu_button, pattern="^(check|profile|help|support|back_main)$"))
 
     print("🤖 Bot started. Waiting for commands...")
-    await app.run_polling()
+    # Run polling – this is synchronous and blocks
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
