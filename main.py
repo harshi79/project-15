@@ -69,6 +69,38 @@ def load_proxies():
 PROXY_LIST = load_proxies()
 logger.info(f"Loaded {len(PROXY_LIST)} proxies.")
 
+# ============ CLOUDFLARE BYPASS ============
+async def bypass_cloudflare(page, max_wait=120):
+    start = asyncio.get_event_loop().time()
+    while (asyncio.get_event_loop().time() - start) < max_wait:
+        try:
+            content = await page.content()
+            url = page.url
+            if "cloudflare" in content.lower() or "security verification" in content.lower():
+                logger.info("🔍 Cloudflare detected – trying to auto‑click Verify...")
+                try:
+                    verify_btn = await page.wait_for_selector(
+                        "button:has-text('Verify'), button:has-text('I am human'), button:has-text('Verify you are human')",
+                        timeout=3000
+                    )
+                    if verify_btn:
+                        await verify_btn.click()
+                        await asyncio.sleep(3)
+                except:
+                    await asyncio.sleep(2)
+                await asyncio.sleep(2)
+                new_content = await page.content()
+                new_url = page.url
+                if ("cloudflare" not in new_content.lower() and 
+                    "security verification" not in new_content.lower()) or \
+                   ("www.crunchyroll.com/" in new_url and "login" not in new_url):
+                    return True
+            else:
+                return True
+        except:
+            await asyncio.sleep(1)
+    return False
+    
 # ============ USER FUNCTIONS ============
 async def add_user(user_id):
     await users_collection.update_one(
