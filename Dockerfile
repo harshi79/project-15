@@ -64,6 +64,5 @@ RUN python3 -m playwright install-deps
 # Copy the rest of the application
 COPY . .
 
-# (Optional) If you want a health check server, we'll add a small HTTP server
-# You can also remove this and switch to Background Worker on Render
-CMD sh -c "python -m http.server $PORT & python3 main.py"
+# ✅ FIXED: Let main.py handle the health server – no extra http.server
+CMD ["python3", "main.py"]
