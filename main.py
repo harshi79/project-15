@@ -32,6 +32,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ============ HEALTH SERVER (keeps Render free tier alive) ============
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def start_health_server():
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info(f"Health server running on port {port}")
+
 # ============ MONGODB CLIENT ============
 client = AsyncIOMotorClient(MONGODB_URI)
 db = client[DB_NAME]
@@ -559,10 +573,13 @@ async def worker():
 
 # ---------- MAIN ----------
 def main():
-    """Start the bot with a persistent event loop."""
+    """Start the bot with a persistent event loop and health server."""
     if not BOT_TOKEN:
         print("❌ BOT_TOKEN not set. Exiting.")
         return
+
+    # Start health server (keeps Render free tier alive)
+    start_health_server()
 
     # Create and set a new event loop
     loop = asyncio.new_event_loop()
@@ -575,7 +592,7 @@ def main():
     # Build the application
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Add all handlers (your existing ones)
+    # Add all handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("chk", cmd_chk))
     app.add_handler(CommandHandler("usage", cmd_usage))
@@ -587,11 +604,6 @@ def main():
 
     print("🤖 Bot started. Waiting for commands...")
     # Run polling – this will use the loop we set
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
-    # Run polling – this is synchronous and blocks
     app.run_polling()
 
 if __name__ == "__main__":
