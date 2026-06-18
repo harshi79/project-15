@@ -530,6 +530,7 @@ async def bypass_cloudflare(page, max_wait=120):
     return False
 
 # ============ WORKER ============
+# ============ WORKER ============
 async def worker():
     global worker_running
     while True:
@@ -542,26 +543,66 @@ async def worker():
             password = task["password"]
             msg_id = task.get("msg_id")
 
+            # ---- Cool status animation ----
+            status_messages = [
+                ("🔍 Getting email...\n(⁠◕‿◕⁠)", 0.8),
+                ("📧 Fetching password...\n>⁠.⁠<", 0.8),
+                ("🔄 Checking credentials...\n༼⁠ ⁠つ⁠ ⁠◕‿◕⁠ ⁠༽⁠つ", 0.8),
+                ("⏳ Verifying...\n(⁠＾3＾⁠♪", 0.8),
+                ("🔐 Logging in...\nO⁠_⁠o", 0.8),
+            ]
+
+            # Send or edit the first status
+            if msg_id:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    text=status_messages[0][0]
+                )
+            else:
+                msg = await bot.send_message(chat_id=chat_id, text=status_messages[0][0])
+                msg_id = msg.message_id
+
+            # Loop through remaining statuses with delays
+            for text, delay in status_messages[1:]:
+                await asyncio.sleep(delay)
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    text=text
+                )
+
+            # Small wait before actual login
+            await asyncio.sleep(0.5)
+
+            # ---- Perform login ----
             result = await login_crunchyroll(email, password)
             new_count = await increment_usage(user_id)
 
+            # ---- Delete the status message ----
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+            except Exception:
+                pass  # ignore if already deleted
+
+            # ---- Send final result with faces ----
             if result["success"]:
                 await bot.send_photo(
                     chat_id=chat_id,
                     photo=SUCCESS_IMAGE,
-                    caption=f"✅ `{email}` – Login Successful! (Used {new_count}/{DAILY_LIMIT} today)"
+                    caption=f"✅ Successfully logged in! ^⁠_⁠^\n`{email}` (Used {new_count}/{DAILY_LIMIT} today)"
                 )
             else:
                 if result["screenshot"]:
                     await bot.send_photo(
                         chat_id=chat_id,
                         photo=result["screenshot"],
-                        caption=f"❌ `{email}` – {result['message']} (Used {new_count}/{DAILY_LIMIT} today)"
+                        caption=f"❌ Failed to login! ಥ⁠_⁠ಥ\n`{email}` – {result['message']} (Used {new_count}/{DAILY_LIMIT} today)"
                     )
                 else:
                     await bot.send_message(
                         chat_id=chat_id,
-                        text=f"❌ `{email}` – {result['message']} (Used {new_count}/{DAILY_LIMIT} today)"
+                        text=f"❌ Failed to login! ಥ⁠_⁠ಥ\n`{email}` – {result['message']} (Used {new_count}/{DAILY_LIMIT} today)"
                     )
 
             await asyncio.sleep(GLOBAL_DELAY)
@@ -570,7 +611,6 @@ async def worker():
             logger.error(f"Worker error: {e}")
         finally:
             task_queue.task_done()
-
 # ---------- MAIN ----------
 def main():
     """Start the bot with a persistent event loop and health server."""
