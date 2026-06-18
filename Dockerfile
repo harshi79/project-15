@@ -66,4 +66,4 @@ COPY . .
 
 # (Optional) If you want a health check server, we'll add a small HTTP server
 # You can also remove this and switch to Background Worker on Render
-CMD sh -c "python -m http.server 8080 & python3 main.py"
+CMD sh -c "python -m http.server $PORT & python3 main.py"
